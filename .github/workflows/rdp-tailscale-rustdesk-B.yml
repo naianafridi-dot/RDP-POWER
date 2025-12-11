@@ -261,26 +261,66 @@ jobs:
           netsh advfirewall firewall delete rule name=$udpName 2>$null
           netsh advfirewall firewall add rule name=$udpName dir=in action=allow protocol=UDP localport=21116
 
-      - name: Launch RustDesk (foreground) + Screenshot to Gofile
-        run: |
-          $rdExe = "C:\Program Files\RustDesk\rustdesk.exe"
-          Start-Process -FilePath $rdExe -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 5
-
-          $screenshotPath = "$env:TEMP\rustdesk_${{ matrix.id }}.png"
-          Add-Type -AssemblyName System.Windows.Forms
-          Add-Type -AssemblyName System.Drawing
-          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-          $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-          $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-          $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
-          $graphics.Dispose(); $bitmap.Dispose()
-
-          $curlResult = curl -F "file=@$screenshotPath" https://store1.gofile.io/uploadFile
-          $json = $curlResult | ConvertFrom-Json
-          if ($json.status -eq "ok") { "SCREENSHOT_URL=$($json.data.downloadPage)" | Out-File -Append $env:GITHUB_ENV }
-
+      - name: Launch RustDesk + Upload Screenshot (Fixed)
+  run: |
+    $rdExe = "C:\Program Files\RustDesk\rustdesk.exe"
+    Start-Process -FilePath $rdExe -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 5
+    
+    # Take screenshot
+    $screenshotPath = "$env:TEMP\rustdesk_${{ matrix.id }}.png"
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+    $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    $graphics.Dispose(); $bitmap.Dispose()
+    
+    Write-Host "Screenshot saved: $screenshotPath"
+    
+    # Try multiple Gofile servers with timeout
+    $servers = @(
+        "https://store1.gofile.io/uploadFile",
+        "https://store2.gofile.io/uploadFile",
+        "https://store3.gofile.io/uploadFile",
+        "https://store4.gofile.io/uploadFile",
+        "https://store5.gofile.io/uploadFile",
+        "https://store6.gofile.io/uploadFile"
+    )
+    
+    $uploaded = $false
+    foreach ($server in $servers) {
+        try {
+            Write-Host "Trying: $server"
+            
+            # Add timeout parameters
+            $curlResult = curl -F "file=@$screenshotPath" $server `
+                --max-time 20 `
+                --connect-timeout 5 `
+                --retry 2 `
+                --retry-delay 2
+            
+            $json = $curlResult | ConvertFrom-Json
+            
+            if ($json.status -eq "ok") {
+                $url = $json.data.downloadPage
+                "SCREENSHOT_URL=$url" | Out-File -Append $env:GITHUB_ENV
+                Write-Host "✅ SUCCESS! URL: $url"
+                $uploaded = $true
+                break
+            }
+        } catch {
+            Write-Host "❌ Failed: $($_.Exception.Message)"
+            continue
+        }
+    }
+    
+    if (-not $uploaded) {
+        Write-Host "⚠️ All Gofile servers failed. Check Artifacts for screenshot."
+        "SCREENSHOT_URL=Failed - Check Artifacts" | Out-File -Append $env:GITHUB_ENV
+    }
       - name: Keep alive (to ${{ env.RUNTIME_MINUTES }} mins)
         run: |
           $mins = [int]"${{ env.RUNTIME_MINUTES }}"
